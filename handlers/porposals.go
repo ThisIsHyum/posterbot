@@ -46,6 +46,7 @@ func NewProposalsHandler(db *database.Database, media *MediaHandler, channelID, 
 }
 
 func (p *ProposalsHandler) HandleUserProposal(bot *telego.Bot, update telego.Update) {
+	log.Printf("Обрабротка предложения")
 	msg := update.Message
 	if msg == nil {
 		return
@@ -63,7 +64,25 @@ func (p *ProposalsHandler) HandleUserProposal(bot *telego.Bot, update telego.Upd
 	}
 
 	if p.db.IsAdmin(userID) || userID == p.ownerID {
-		return
+		if state, _ := p.db.GetAdminState(userID); state == "reason" {
+			log.Printf("Обработка причины")
+			reasonUser, err := p.db.GetAdminReason(userID)
+			if err != nil {
+				log.Printf("Ошибка получения юзера для написания причины")
+				return
+			}
+			log.Printf("Юзер для отправки причины: %d", reasonUser)
+			bot.SendMessage(tu.Message(tu.ID(reasonUser), fmt.Sprintf("Ваше сообщение отклонено по причине: %s", msg.Text)))
+			kb := tu.InlineKeyboard(
+				tu.InlineKeyboardRow(
+					tu.InlineKeyboardButton("Далее").WithCallbackData("next"),
+				),
+			)
+			bot.SendMessage(tu.Message(tu.ID(msg.From.ID), "Причина отправленна").WithReplyMarkup(kb))
+			p.db.UpdateAdminReason(userID, 0)
+			p.db.UpdateAdminState(userID, "standart")
+			return
+		}
 	}
 
 	if msg.Text == "" && msg.Photo == nil && msg.Document == nil &&
@@ -79,6 +98,7 @@ func (p *ProposalsHandler) HandleUserProposal(bot *telego.Bot, update telego.Upd
 
 	message := &database.Message{
 		MessageID:   msg.MessageID,
+		SenderID:    uint(userID),
 		MessageText: messageText,
 		MediaType:   mediaType,
 		MediaFileID: mediaFileID,

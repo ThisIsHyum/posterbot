@@ -96,11 +96,12 @@ func (m *ModerationHandler) SendMessageForModeration(bot *telego.Bot, chatID int
 }
 
 func (m *ModerationHandler) HandleCallback(bot *telego.Bot, update telego.Update) {
+
 	callback := update.CallbackQuery
 	if callback == nil {
 		return
 	}
-
+	log.Printf("Вызов callback: %s", callback.ID)
 	userID := callback.From.ID
 	chatID := callback.Message.Chat.ID
 
@@ -113,12 +114,34 @@ func (m *ModerationHandler) HandleCallback(bot *telego.Bot, update telego.Update
 
 	data := callback.Data
 	var messageID int
+	var senderID int
 
 	if n, _ := fmt.Sscanf(data, "approve_%d", &messageID); n == 1 {
 		m.HandleApprove(bot, chatID, messageID, callback)
 	} else if n, _ := fmt.Sscanf(data, "reject_%d", &messageID); n == 1 {
 		m.HandleReject(bot, chatID, messageID, callback)
+	} else if n, _ := fmt.Sscanf(data, "reason_%d", &senderID); n == 1 {
+		m.HandleReason(bot, chatID, senderID, callback)
+	} else if n, _ := fmt.Sscanf(data, "next"); n == 0 {
+		m.HandleNext(bot, chatID, messageID, callback)
+	} else {
+		log.Printf("Ни один хендлер не обрабатывает данный калбек: %d", n)
 	}
+}
+
+func (m *ModerationHandler) HandleNext(bot *telego.Bot, chatID int64, messageID int, callback *telego.CallbackQuery) {
+	log.Printf("Вызов Next хендлера")
+	m.ShowProposals(bot, chatID, chatID)
+	bot.AnswerCallbackQuery(tu.CallbackQuery(callback.ID).WithText("хуй"))
+}
+
+func (m *ModerationHandler) HandleReason(bot *telego.Bot, chatID int64, senderID int, callback *telego.CallbackQuery) {
+	bot.SendMessage(tu.Message(tu.ID(chatID), "Введите причину отказа"))
+	m.db.UpdateAdminState(chatID, "reason")
+	log.Printf("senderID: %d", senderID)
+	m.db.UpdateAdminReason(chatID, int64(senderID))
+	bot.AnswerCallbackQuery(tu.CallbackQuery(callback.ID).WithText("хуй"))
+
 }
 
 func (m *ModerationHandler) HandleApprove(bot *telego.Bot, chatID int64, messageID int, callback *telego.CallbackQuery) {
@@ -154,17 +177,17 @@ func (m *ModerationHandler) HandleApprove(bot *telego.Bot, chatID int64, message
 }
 
 func (m *ModerationHandler) HandleReject(bot *telego.Bot, chatID int64, messageID int, callback *telego.CallbackQuery) {
-	_, err := m.db.GetMessageByID(messageID)
+	msg, err := m.db.GetMessageByID(messageID)
 	if err != nil {
 		bot.AnswerCallbackQuery(tu.CallbackQuery(
 			callback.ID,
 		).WithText("❌ Ошибка: предложение не найдено"))
 		return
 	}
-
+	senderID := msg.SenderID
 	m.db.UpdateMessageStatus(messageID, "rejected")
 	m.db.DeleteMessage(messageID)
-
+	bot.SendMessage(tu.Message(tu.ID(chatID), ""))
 	bot.AnswerCallbackQuery(tu.CallbackQuery(
 		callback.ID,
 	).WithText("✅ Предложение отклонено!"))
@@ -173,6 +196,12 @@ func (m *ModerationHandler) HandleReject(bot *telego.Bot, chatID int64, messageI
 		ChatID:    tu.ID(chatID),
 		MessageID: callback.Message.MessageID,
 	})
-
-	m.ShowProposals(bot, chatID, callback.From.ID)
+	log.Printf("senderID: %d", senderID)
+	kb := tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			tu.InlineKeyboardButton("Причина").WithCallbackData(fmt.Sprintf("reason_%d", senderID)),
+			tu.InlineKeyboardButton("Далее").WithCallbackData("next"),
+		),
+	)
+	bot.SendMessage(tu.Message(tu.ID(chatID), "Выберете действие").WithReplyMarkup(kb))
 }

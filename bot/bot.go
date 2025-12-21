@@ -16,9 +16,10 @@ type Bot struct {
 	botHandler *th.BotHandler
 	channelID  int64
 	ownerID    int64
+	ownerName  string
 }
 
-func NewBot(token string, channelID, ownerID int64) (*Bot, error) {
+func NewBot(token string, channelID, ownerID int64, ownerName string) (*Bot, error) {
 	bot, err := telego.NewBot(token)
 	if err != nil {
 		return nil, err
@@ -34,6 +35,7 @@ func NewBot(token string, channelID, ownerID int64) (*Bot, error) {
 		db:        db,
 		channelID: channelID,
 		ownerID:   ownerID,
+		ownerName: ownerName,
 	}
 
 	botInstance.initializeOwner()
@@ -53,7 +55,10 @@ func (b *Bot) initializeOwner() {
 }
 
 func (b *Bot) Start() {
-	updates, err := b.bot.UpdatesViaLongPolling(nil)
+	updates, err := b.bot.UpdatesViaLongPolling(&telego.GetUpdatesParams{
+		AllowedUpdates: []string{"*"},
+	})
+
 	if err != nil {
 		log.Printf("Ошибка получения обновлений: %v", err)
 		return

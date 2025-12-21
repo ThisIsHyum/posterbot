@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  telegram-bot:
+    build: .
+    container_name: telegram-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./bot.db:/app/data/bot.db
+    environment:
+      - BOT_ENV=production
+    networks:
+      - botnet
+
+networks:
+  botnet:
+    driver: bridge

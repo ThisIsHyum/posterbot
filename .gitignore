@@ -1,5 +1,4 @@
 bot.db
-bot.env
-bott
-config.json
-env.fish
+.env
+telegram-bot
+data

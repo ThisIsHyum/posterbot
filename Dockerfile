@@ -1,29 +1,30 @@
+# --- Сборка бинарника ---
 FROM golang:1.21-alpine AS builder
+
+RUN apk add --no-cache git
 
 WORKDIR /app
 
-# Копируем файлы модулей
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Копируем исходный код
 COPY . .
 
-# Собираем приложение
-RUN go build -o bott .
+# Собираем бинарник с уникальным именем
+RUN go build -o posterbot
 
-# Финальный образ
+# --- Финальный образ ---
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates
+RUN apk add --no-cache sqlite ca-certificates
 
-WORKDIR /root/
+WORKDIR /app
 
 # Копируем бинарник
-COPY --from=builder /app/bott .
+COPY --from=builder /app/posterbot /app/posterbot
 
-# Создаем директорию для базы данных
-RUN mkdir -p /root/data
+# Делаем исполняемым
+RUN chmod +x /app/posterbot
 
-# Запускаем приложение
-CMD ["./bott"]
+# Точка входа
+CMD ["/app/posterbot"]
