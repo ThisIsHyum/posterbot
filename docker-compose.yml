@@ -1,9 +1,10 @@
 version: "3.9"
 
 services:
-  telegram-bot:
+  posterbot:
+    image: posterbot:latest
     build: .
-    container_name: telegram-bot
+    container_name: posterbot
     restart: unless-stopped
     env_file:
       - .env
