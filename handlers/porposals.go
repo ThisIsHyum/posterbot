@@ -54,7 +54,10 @@ func (p *ProposalsHandler) HandleUserProposal(bot *telego.Bot, update telego.Upd
 
 	userID := msg.From.ID
 	chatID := msg.Chat.ID
-
+	if p.db.IsBanned(userID) {
+		bot.SendMessage(tu.Message(tu.ID(userID), "Вы заблокированы"))
+		return
+	}
 	if msg.Chat.Type != "private" {
 		return
 	}
@@ -81,6 +84,27 @@ func (p *ProposalsHandler) HandleUserProposal(bot *telego.Bot, update telego.Upd
 			bot.SendMessage(tu.Message(tu.ID(msg.From.ID), "Причина отправленна").WithReplyMarkup(kb))
 			p.db.UpdateAdminReason(userID, 0)
 			p.db.UpdateAdminState(userID, "standart")
+			return
+		} else if state, _ := p.db.GetAdminState(userID); state == "ban_reason" {
+			log.Printf("Обработка причины блокировки")
+			reasonUser, err := p.db.GetAdminReason(userID)
+			if err != nil {
+				log.Printf("Ошибка получения юзера для написания причины")
+				return
+			}
+			log.Printf("Юзер для отправки причины: %d", reasonUser)
+			err = p.db.BanUser(reasonUser)
+			if err != nil {
+				log.Printf("Ошибка блокировки юзера: %d", reasonUser)
+				bot.SendMessage(tu.Message(tu.ID(reasonUser), "Ошибка при блокировке юзера, обратитесь к тех. администратору"))
+				p.db.UpdateAdminReason(userID, 0)
+				p.db.UpdateAdminState(userID, "standart")
+				return
+			}
+			bot.SendMessage(tu.Message(tu.ID(reasonUser), fmt.Sprintf("Вы заблокированы по причине: %s", msg.Text)))
+			p.db.UpdateAdminReason(userID, 0)
+			p.db.UpdateAdminState(userID, "standart")
+			bot.SendMessage(tu.Message(tu.ID(chatID), "Пользователь успешно заблокирован"))
 			return
 		}
 	}
@@ -135,9 +159,11 @@ func (p *ProposalsHandler) notifyAdminsAboutNewProposal(bot *telego.Bot, message
 
 	notification := fmt.Sprintf(
 		"📨 Поступило новое анонимное предложение!\n\n"+
+			"ID Предложения: %d\n\n"+
 			"💬 Текст: %s\n"+
 			"📁 Тип: %s\n\n"+
 			"Используйте /proposals для просмотра всех предложений.",
+		message.ID,
 		message.MessageText,
 		message.MediaType,
 	)

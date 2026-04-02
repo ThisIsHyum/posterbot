@@ -8,7 +8,7 @@ import (
 )
 
 type Banned struct {
-	ID uint `gorm:"primaryKey"`
+	ID int64 `gorm:"primaryKey"`
 }
 
 type Message struct {
@@ -131,4 +131,21 @@ func (d *Database) GetAdmins() ([]Admin, error) {
 	var admins []Admin
 	err := d.db.Find(&admins).Error
 	return admins, err
+}
+
+func (d *Database) BanUser(userID int64) error {
+	banned := Banned{
+		ID: userID,
+	}
+	return d.db.Create(&banned).Error
+}
+
+func (d *Database) IsBanned(userID int64) bool {
+	var banned Banned
+	err := d.db.First(&banned, "ID = ?", userID).Error
+	return err == nil
+}
+
+func (d *Database) PardonUser(userID int64) error {
+	return d.db.Where("ID = ?", userID).Delete(&Banned{}).Error
 }

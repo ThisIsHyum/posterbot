@@ -20,17 +20,19 @@ func main() {
 	if token == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN не установлен")
 	}
-	owner_id, err := strconv.Atoi(os.Getenv("OWNER_ID"))
+	ownerID, err := strconv.Atoi(os.Getenv("OWNER_ID"))
 	if err != nil {
 		log.Fatalf("Ошибка айди владельца не должен быть пустым")
 	}
-	owner_name := os.Getenv("OWNER_NAME")
+	ownerName := os.Getenv("OWNER_NAME")
 	channelID, err := strconv.Atoi(os.Getenv("CHANNEL_ID"))
 	if err != nil {
 		log.Fatal("Ошибка айди канала не должен быть пустым")
 	}
 
-	bot, err := bot.NewBot(token, int64(channelID), int64(owner_id), owner_name)
+	postMessage := os.Getenv("POST_MESSAGE")
+
+	bot, err := bot.NewBot(token, int64(channelID), int64(ownerID), ownerName, postMessage)
 	if err != nil {
 		log.Fatalf("Ошибка создания бота: %v", err)
 	}

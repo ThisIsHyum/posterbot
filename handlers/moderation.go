@@ -95,6 +95,45 @@ func (m *ModerationHandler) SendMessageForModeration(bot *telego.Bot, chatID int
 	).WithReplyMarkup(keyboard))
 }
 
+func (m *ModerationHandler) HandlePardonCommand(bot *telego.Bot, update telego.Update) {
+	msg := update.Message
+	if msg == nil {
+		return
+	}
+	senderID := update.Message.Chat.ID
+
+	if !m.db.IsAdmin(senderID) && senderID != m.ownerID {
+		return
+	}
+	args := msg.Text
+	if len(args) < 8 {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"📝 Использование: /pardon <ID_пользователя>\n\n"+
+				"Пример: /pardon 123456789",
+		))
+		return
+	}
+	var targetUserID int64
+	_, err := fmt.Sscanf(args, "/pardon %d", &targetUserID)
+	if err != nil || targetUserID == 0 {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ Неверный формат ID. Используйте: /pardon <ID_пользователя>\n\n"+
+				"Пример: /pardon 123456789",
+		))
+		return
+	}
+	err = m.db.PardonUser(targetUserID)
+	if err != nil {
+		log.Printf("Ошибка разбана юзера %d:%s", targetUserID, err)
+		return
+	}
+	bot.SendMessage(tu.Message(tu.ID(targetUserID), "Вы разаблокированы"))
+	bot.SendMessage(tu.Message(tu.ID(msg.Chat.ID), fmt.Sprintf("Пользователь %d успешно разбанен", targetUserID)))
+
+}
+
 func (m *ModerationHandler) HandleCallback(bot *telego.Bot, update telego.Update) {
 
 	callback := update.CallbackQuery
@@ -122,6 +161,8 @@ func (m *ModerationHandler) HandleCallback(bot *telego.Bot, update telego.Update
 		m.HandleReject(bot, chatID, messageID, callback)
 	} else if n, _ := fmt.Sscanf(data, "reason_%d", &senderID); n == 1 {
 		m.HandleReason(bot, chatID, senderID, callback)
+	} else if n, _ := fmt.Sscanf(data, "ban_reason_%d", &senderID); n == 1 {
+		m.HandleBanReason(bot, chatID, senderID, callback)
 	} else if n, _ := fmt.Sscanf(data, "next"); n == 0 {
 		m.HandleNext(bot, chatID, messageID, callback)
 	} else {
@@ -144,6 +185,13 @@ func (m *ModerationHandler) HandleReason(bot *telego.Bot, chatID int64, senderID
 
 }
 
+func (m *ModerationHandler) HandleBanReason(bot *telego.Bot, chatID int64, senderID int, callback *telego.CallbackQuery) {
+	bot.SendMessage(tu.Message(tu.ID(chatID), "Введите причину блокировки"))
+	m.db.UpdateAdminState(chatID, "ban_reason")
+	log.Printf("senderID: %d", senderID)
+	m.db.UpdateAdminReason(chatID, int64(senderID))
+	bot.AnswerCallbackQuery(tu.CallbackQuery(callback.ID).WithText("Good"))
+}
 func (m *ModerationHandler) HandleApprove(bot *telego.Bot, chatID int64, messageID int, callback *telego.CallbackQuery) {
 	message, err := m.db.GetMessageByID(messageID)
 	if err != nil {
@@ -201,6 +249,7 @@ func (m *ModerationHandler) HandleReject(bot *telego.Bot, chatID int64, messageI
 		tu.InlineKeyboardRow(
 			tu.InlineKeyboardButton("Причина").WithCallbackData(fmt.Sprintf("reason_%d", senderID)),
 			tu.InlineKeyboardButton("Далее").WithCallbackData("next"),
+			tu.InlineKeyboardButton("Бан").WithCallbackData(fmt.Sprintf("ban_reason_%d", senderID)),
 		),
 	)
 	bot.SendMessage(tu.Message(tu.ID(chatID), "Выберете действие").WithReplyMarkup(kb))

@@ -11,11 +11,15 @@ import (
 
 // MediaHandler обрабатывает медиафайлы
 type MediaHandler struct {
-	db *database.Database
+	db          *database.Database
+	postMessage string
 }
 
-func NewMediaHandler(db *database.Database) *MediaHandler {
-	return &MediaHandler{db: db}
+func NewMediaHandler(db *database.Database, postMessage string) *MediaHandler {
+	return &MediaHandler{
+		db:          db,
+		postMessage: postMessage,
+	}
 }
 
 // GetMediaInfo определяет тип медиа и file_id
@@ -195,7 +199,7 @@ func (m *MediaHandler) PublishMedia(bot *telego.Bot, channelID int64, message da
 	default: // text
 		_, sendErr = bot.SendMessage(&telego.SendMessageParams{
 			ChatID: telego.ChatID{ID: channelID},
-			Text:   fmt.Sprintf("💡 Новое предложение:\n\n%s", message.MessageText),
+			Text:   fmt.Sprintf("💡 Новое предложение:\n\n%s\n\n%s", message.MessageText, m.postMessage),
 		})
 	}
 

@@ -11,15 +11,16 @@ import (
 )
 
 type Bot struct {
-	bot        *telego.Bot
-	db         *database.Database
-	botHandler *th.BotHandler
-	channelID  int64
-	ownerID    int64
-	ownerName  string
+	bot         *telego.Bot
+	db          *database.Database
+	botHandler  *th.BotHandler
+	channelID   int64
+	ownerID     int64
+	ownerName   string
+	postMessage string
 }
 
-func NewBot(token string, channelID, ownerID int64, ownerName string) (*Bot, error) {
+func NewBot(token string, channelID, ownerID int64, ownerName string, postMessage string) (*Bot, error) {
 	bot, err := telego.NewBot(token)
 	if err != nil {
 		return nil, err
@@ -31,11 +32,12 @@ func NewBot(token string, channelID, ownerID int64, ownerName string) (*Bot, err
 	}
 
 	botInstance := &Bot{
-		bot:       bot,
-		db:        db,
-		channelID: channelID,
-		ownerID:   ownerID,
-		ownerName: ownerName,
+		bot:         bot,
+		db:          db,
+		channelID:   channelID,
+		ownerID:     ownerID,
+		ownerName:   ownerName,
+		postMessage: postMessage,
 	}
 
 	botInstance.initializeOwner()
@@ -45,7 +47,7 @@ func NewBot(token string, channelID, ownerID int64, ownerName string) (*Bot, err
 
 func (b *Bot) initializeOwner() {
 	if !b.db.IsAdmin(b.ownerID) {
-		err := b.db.AddAdmin(b.ownerID, "vstor08")
+		err := b.db.AddAdmin(b.ownerID, b.ownerName)
 		if err != nil {
 			log.Printf("Предупреждение: не удалось добавить владельца: %v", err)
 		} else {
@@ -88,7 +90,7 @@ func (b *Bot) Stop() {
 
 func (b *Bot) registerHandlers(bh *th.BotHandler) {
 
-	mediaHandler := handlers.NewMediaHandler(b.db)
+	mediaHandler := handlers.NewMediaHandler(b.db, b.postMessage)
 	proposalsHandler := handlers.NewProposalsHandler(b.db, mediaHandler, b.channelID, b.ownerID)
 	moderationHandler := handlers.NewModerationHandler(b.db, mediaHandler, b.channelID, b.ownerID)
 	adminHandler := handlers.NewAdminHandler(b.db, b.ownerID)
@@ -97,6 +99,7 @@ func (b *Bot) registerHandlers(bh *th.BotHandler) {
 	bh.Handle(moderationHandler.HandleProposalsCommand, th.CommandEqual("proposals"))
 	bh.Handle(adminHandler.HandleAddAdminCommand, th.CommandEqual("addadmin"))
 	bh.Handle(adminHandler.HandleListAdminsCommand, th.CommandEqual("admins"))
+	bh.Handle(moderationHandler.HandlePardonCommand, th.CommandEqual("pardon"))
 
 	bh.Handle(moderationHandler.HandleCallback, th.AnyCallbackQuery())
 
