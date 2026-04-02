@@ -27,7 +27,7 @@ type Admin struct {
 	ID       uint  `gorm:"primaryKey"`
 	UserID   int64 `gorm:"uniqueIndex;not null"`
 	UserName string
-	State    string `gomr:"default:'standart'"`
+	State    string `gorm:"default:'standart'"`
 	Reason   int64
 }
 

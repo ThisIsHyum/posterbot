@@ -10,7 +10,6 @@ services:
       - .env
     volumes:
       - ./data:/app/data
-      - ./bot.db:/app/data/bot.db
     environment:
       - BOT_ENV=production
     networks:
