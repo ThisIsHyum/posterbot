@@ -40,7 +40,6 @@ func (a *AdminHandler) HandleAddAdminCommand(bot *telego.Bot, update telego.Upda
 		return
 	}
 
-	// Парсим команду: /addadmin <user_id>
 	args := msg.Text
 	if len(args) < 10 {
 		bot.SendMessage(tu.Message(
