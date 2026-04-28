@@ -1,0 +1,1377 @@
+####./.dockerignore####
+./.dockerignore
+.git
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml.git
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+#######################
+####./.env.example####
+./.env.example
+TELEGRAM_BOT_TOKEN=
+OWNER_ID=
+CHANNEL_ID=
+OWNER_NAME=
+POST_MESSAGE=
+
+######################
+##################./Dockerfile###################
+./Dockerfile
+# --- Сборка бинарника ---
+FROM golang:1.21-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Собираем бинарник с уникальным именем
+RUN go build -o posterbot
+
+# --- Финальный образ ---
+FROM alpine:latest
+
+RUN apk add --no-cache sqlite ca-certificates
+
+WORKDIR /app
+
+# Копируем бинарник
+COPY --from=builder /app/posterbot /app/posterbot
+
+# Делаем исполняемым
+RUN chmod +x /app/posterbot
+
+# Точка входа
+CMD ["/app/posterbot"]
+
+#################################################
+##############################################./bot/bot.go###############################################
+./bot/bot.go
+package bot
+
+import (
+	"log"
+
+	"telegram-bot/database"
+	"telegram-bot/handlers"
+
+	"github.com/mymmrac/telego"
+	th "github.com/mymmrac/telego/telegohandler"
+)
+
+type Bot struct {
+	bot         *telego.Bot
+	db          *database.Database
+	botHandler  *th.BotHandler
+	channelID   int64
+	ownerID     int64
+	ownerName   string
+	postMessage string
+}
+
+func NewBot(token string, channelID, ownerID int64, ownerName string, postMessage string) (*Bot, error) {
+	bot, err := telego.NewBot(token)
+	if err != nil {
+		return nil, err
+	}
+
+	db, err := database.NewDatabase()
+	if err != nil {
+		return nil, err
+	}
+
+	botInstance := &Bot{
+		bot:         bot,
+		db:          db,
+		channelID:   channelID,
+		ownerID:     ownerID,
+		ownerName:   ownerName,
+		postMessage: postMessage,
+	}
+
+	botInstance.initializeOwner()
+
+	return botInstance, nil
+}
+
+func (b *Bot) initializeOwner() {
+	if !b.db.IsAdmin(b.ownerID) {
+		err := b.db.AddAdmin(b.ownerID, b.ownerName)
+		if err != nil {
+			log.Printf("Предупреждение: не удалось добавить владельца: %v", err)
+		} else {
+			log.Printf("✅ Владелец %d добавлен как администратор", b.ownerID)
+		}
+	}
+}
+
+func (b *Bot) Start() {
+	updates, err := b.bot.UpdatesViaLongPolling(&telego.GetUpdatesParams{
+		AllowedUpdates: []string{"*"},
+	})
+
+	if err != nil {
+		log.Printf("Ошибка получения обновлений: %v", err)
+		return
+	}
+
+	botHandler, err := th.NewBotHandler(b.bot, updates)
+	if err != nil {
+		log.Printf("Ошибка создания обработчика: %v", err)
+		return
+	}
+
+	b.registerHandlers(botHandler)
+	b.botHandler = botHandler
+
+	go botHandler.Start()
+
+	log.Println("🤖 Бот-предложка запущен! Принимает анонимные предложения в ЛС")
+}
+
+func (b *Bot) Stop() {
+	if b.botHandler != nil {
+		b.botHandler.Stop()
+	}
+	b.bot.StopLongPolling()
+	log.Println("Бот остановлен")
+}
+
+func (b *Bot) registerHandlers(bh *th.BotHandler) {
+
+	mediaHandler := handlers.NewMediaHandler(b.db, b.postMessage)
+	proposalsHandler := handlers.NewProposalsHandler(b.db, mediaHandler, b.channelID, b.ownerID)
+	moderationHandler := handlers.NewModerationHandler(b.db, mediaHandler, b.channelID, b.ownerID)
+	adminHandler := handlers.NewAdminHandler(b.db, b.ownerID)
+
+	bh.Handle(proposalsHandler.HandleStartCommand, th.CommandEqual("start"))
+	bh.Handle(moderationHandler.HandleProposalsCommand, th.CommandEqual("proposals"))
+	bh.Handle(adminHandler.HandleAddAdminCommand, th.CommandEqual("addadmin"))
+	bh.Handle(adminHandler.HandleListAdminsCommand, th.CommandEqual("admins"))
+	bh.Handle(moderationHandler.HandlePardonCommand, th.CommandEqual("pardon"))
+
+	bh.Handle(moderationHandler.HandleCallback, th.AnyCallbackQuery())
+
+	bh.Handle(proposalsHandler.HandleUserProposal, th.AnyMessage())
+}
+
+#########################################################################################################
+#####################################./database/database.go#####################################
+./database/database.go
+package database
+
+import (
+	"time"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+)
+
+type Banned struct {
+	ID int64 `gorm:"primaryKey"`
+}
+
+type Message struct {
+	ID          uint `gorm:"primaryKey"`
+	SenderID    uint `gorm:"not null"`
+	MessageID   int  `gorm:"not null"`
+	MessageText string
+	MediaType   string `gorm:"size:50"`
+	MediaFileID string
+	CreatedAt   time.Time
+	Status      string `gorm:"default:'pending'"`
+	ChannelID   int64
+}
+
+type Admin struct {
+	ID       uint  `gorm:"primaryKey"`
+	UserID   int64 `gorm:"uniqueIndex;not null"`
+	UserName string
+	State    string `gorm:"default:'standart'"`
+	Reason   int64
+}
+
+type Database struct {
+	db *gorm.DB
+}
+
+func NewDatabase() (*Database, error) {
+	db, err := gorm.Open(sqlite.Open("bot.db"), &gorm.Config{})
+	if err != nil {
+		return nil, err
+	}
+
+	err = db.AutoMigrate(&Message{}, &Admin{}, &Banned{})
+	if err != nil {
+		return nil, err
+	}
+
+	return &Database{db: db}, nil
+}
+
+func (d *Database) SaveMessage(msg *Message) error {
+	return d.db.Create(msg).Error
+}
+
+func (d *Database) GetPendingMessages() ([]Message, error) {
+	var messages []Message
+	err := d.db.Where("status = ?", "pending").Order("created_at asc").Find(&messages).Error
+	return messages, err
+}
+
+func (d *Database) UpdateMessageStatus(messageID int, status string) error {
+	return d.db.Model(&Message{}).Where("message_id = ?", messageID).Update("status", status).Error
+}
+
+func (d *Database) DeleteMessage(messageID int) error {
+	return d.db.Delete(&Message{}, &Message{MessageID: messageID}).Error
+}
+
+func (d *Database) GetMessageSender(messageID int) (uint, error) {
+	msg, err := d.GetMessageByID(messageID)
+	if err != nil {
+		return 0, err
+	}
+	return msg.SenderID, nil
+}
+
+func (d *Database) GetMessageByID(messageID int) (Message, error) {
+	var message Message
+	err := d.db.First(&message, &Message{MessageID: messageID}).Error
+	return message, err
+}
+
+func (d *Database) IsAdmin(userID int64) bool {
+	var admin Admin
+	err := d.db.First(&admin, "user_id = ?", userID).Error
+	return err == nil
+}
+
+func (d *Database) AddAdmin(userID int64, userName string) error {
+	admin := Admin{
+		UserID:   userID,
+		UserName: userName,
+		State:    "standart",
+		Reason:   0,
+	}
+	return d.db.Create(&admin).Error
+}
+
+func (d *Database) GetAdmin(userID int64) (Admin, error) {
+	var admin Admin
+	err := d.db.First(&admin, "user_id = ?", userID).Error
+	return admin, err
+}
+
+func (d *Database) UpdateAdminState(userID int64, state string) error {
+	return d.db.Model(&Admin{}).Where("user_id = ?", userID).Update("state", state).Error
+}
+func (d *Database) GetAdminState(userID int64) (string, error) {
+	admin, err := d.GetAdmin(userID)
+	if err != nil {
+		return "", err
+	}
+	return admin.State, nil
+}
+
+func (d *Database) UpdateAdminReason(userID int64, reason int64) error {
+	return d.db.Model(&Admin{}).Where("user_id = ?", userID).Update("reason", reason).Error
+}
+
+func (d *Database) GetAdminReason(userID int64) (int64, error) {
+	admin, err := d.GetAdmin(userID)
+	return admin.Reason, err
+}
+
+func (d *Database) RemoveAdmin(userID int64) error {
+	return d.db.Where("user_id = ?", userID).Delete(&Admin{}).Error
+}
+
+func (d *Database) GetAdmins() ([]Admin, error) {
+	var admins []Admin
+	err := d.db.Find(&admins).Error
+	return admins, err
+}
+
+func (d *Database) BanUser(userID int64) error {
+	banned := Banned{
+		ID: userID,
+	}
+	return d.db.Create(&banned).Error
+}
+
+func (d *Database) IsBanned(userID int64) bool {
+	var banned Banned
+	err := d.db.First(&banned, "ID = ?", userID).Error
+	return err == nil
+}
+
+func (d *Database) PardonUser(userID int64) error {
+	return d.db.Where("ID = ?", userID).Delete(&Banned{}).Error
+}
+
+################################################################################################
+####./docker-compose.yml#####
+./docker-compose.yml
+version: "3.9"
+
+services:
+  posterbot:
+    image: posterbot:latest
+    build: .
+    container_name: posterbot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      - BOT_ENV=production
+    networks:
+      - botnet
+
+networks:
+  botnet:
+    driver: bridge
+
+#############################
+####################################./go.mod####################################
+./go.mod
+module telegram-bot
+
+go 1.21
+
+require (
+	github.com/glebarez/sqlite v1.10.0
+	github.com/mymmrac/telego v0.25.0
+	gorm.io/gorm v1.25.5
+)
+
+require (
+	github.com/andybalholm/brotli v1.0.5 // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/fasthttp/router v1.4.19 // indirect
+	github.com/glebarez/go-sqlite v1.21.2 // indirect
+	github.com/goccy/go-json v0.10.2 // indirect
+	github.com/google/uuid v1.3.0 // indirect
+	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/joho/godotenv v1.5.1 // indirect
+	github.com/klauspost/compress v1.16.5 // indirect
+	github.com/mattn/go-isatty v0.0.17 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/savsgio/gotils v0.0.0-20230208104028-c358bd845dee // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	github.com/valyala/fasthttp v1.47.0 // indirect
+	golang.org/x/sys v0.7.0 // indirect
+	modernc.org/libc v1.22.5 // indirect
+	modernc.org/mathutil v1.5.0 // indirect
+	modernc.org/memory v1.5.0 // indirect
+	modernc.org/sqlite v1.23.1 // indirect
+)
+
+################################################################################
+#########################################################./go.sum#########################################################
+./go.sum
+github.com/andybalholm/brotli v1.0.5 h1:8uQZIdzKmjc/iuPu7O2ioW48L81FgatrcpfFmiq/cCs=
+github.com/andybalholm/brotli v1.0.5/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
+github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
+github.com/fasthttp/router v1.4.19 h1:RLE539IU/S4kfb4MP56zgP0TIBU9kEg0ID9GpWO0vqk=
+github.com/fasthttp/router v1.4.19/go.mod h1:+Fh3YOd8x1+he6ZS+d2iUDBH9MGGZ1xQFUor0DE9rKE=
+github.com/glebarez/go-sqlite v1.21.2 h1:3a6LFC4sKahUunAmynQKLZceZCOzUthkRkEAl9gAXWo=
+github.com/glebarez/go-sqlite v1.21.2/go.mod h1:sfxdZyhQjTM2Wry3gVYWaW072Ri1WMdWJi0k6+3382k=
+github.com/glebarez/sqlite v1.10.0 h1:u4gt8y7OND/cCei/NMHmfbLxF6xP2wgKcT/BJf2pYkc=
+github.com/glebarez/sqlite v1.10.0/go.mod h1:IJ+lfSOmiekhQsFTJRx/lHtGYmCdtAiTaf5wI9u5uHA=
+github.com/goccy/go-json v0.10.2 h1:CrxCmQqYDkv1z7lO7Wbh2HN93uovUHgrECaO5ZrCXAU=
+github.com/goccy/go-json v0.10.2/go.mod h1:6MelG93GURQebXPDq3khkgXZkazVtN9CRI+MGFi0w8I=
+github.com/golang/mock v1.6.0 h1:ErTB+efbowRARo13NNdxyJji2egdxLGQhRaY+DUumQc=
+github.com/golang/mock v1.6.0/go.mod h1:p6yTPP+5HYm5mzsMV8JkE6ZKdX+/wYM6Hr+LicevLPs=
+github.com/google/pprof v0.0.0-20221118152302-e6195bd50e26 h1:Xim43kblpZXfIBQsbuBVKCudVG457BR2GZFIz3uw3hQ=
+github.com/google/pprof v0.0.0-20221118152302-e6195bd50e26/go.mod h1:dDKJzRmX4S37WGHujM7tX//fmj1uioxKzKxz3lo4HJo=
+github.com/google/uuid v1.3.0 h1:t6JiXgmwXMjEs8VusXIJk2BXHsn+wx8BZdTaoZ5fu7I=
+github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/jinzhu/inflection v1.0.0 h1:K317FqzuhWc8YvSVlFMCCUb36O/S9MCKRDI7QkRKD/E=
+github.com/jinzhu/inflection v1.0.0/go.mod h1:h+uFLlag+Qp1Va5pdKtLDYj+kHp5pxUVkryuEj+Srlc=
+github.com/jinzhu/now v1.1.5 h1:/o9tlHleP7gOFmsnYNz3RGnqzefHA47wQpKrrdTIwXQ=
+github.com/jinzhu/now v1.1.5/go.mod h1:d3SSVoowX0Lcu0IBviAWJpolVfI5UJVZZ7cO71lE/z8=
+github.com/joho/godotenv v1.5.1 h1:7eLL/+HRGLY0ldzfGMeQkb7vMd0as4CfYvUVzLqw0N0=
+github.com/joho/godotenv v1.5.1/go.mod h1:f4LDr5Voq0i2e/R5DDNOoa2zzDfwtkZa6DnEwAbqwq4=
+github.com/klauspost/compress v1.16.5 h1:IFV2oUNUzZaz+XyusxpLzpzS8Pt5rh0Z16For/djlyI=
+github.com/klauspost/compress v1.16.5/go.mod h1:ntbaceVETuRiXiv4DpjP66DpAtAGkEQskQzEyD//IeE=
+github.com/mattn/go-isatty v0.0.17 h1:BTarxUcIeDqL27Mc+vyvdWYSL28zpIhv3RoTdsLMPng=
+github.com/mattn/go-isatty v0.0.17/go.mod h1:kYGgaQfpe5nmfYZH+SKPsOc2e4SrIfOl2e/yFXSvRLM=
+github.com/mymmrac/telego v0.25.0 h1:ANI4irLey+bQC8UEDB/d7JZrGmxWmcuhMMrtyLEEzI4=
+github.com/mymmrac/telego v0.25.0/go.mod h1:UGyuLaO49ZgiWLiHuB5rotF6Ms7Tv9tu2R3LTxnTmSc=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
+github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
+github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
+github.com/savsgio/gotils v0.0.0-20230208104028-c358bd845dee h1:8Iv5m6xEo1NR1AvpV+7XmhI4r39LGNzwUL4YpMuL5vk=
+github.com/savsgio/gotils v0.0.0-20230208104028-c358bd845dee/go.mod h1:qwtSXrKuJh/zsFQ12yEE89xfCrGKK63Rr7ctU/uCo4g=
+github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcUk=
+github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
+github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
+github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
+github.com/valyala/fasthttp v1.47.0 h1:y7moDoxYzMooFpT5aHgNgVOQDrS3qlkfiP9mDtGGK9c=
+github.com/valyala/fasthttp v1.47.0/go.mod h1:k2zXd82h/7UZc3VOdJ2WaUqt1uZ/XpXAfE9i+HBC3lA=
+golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.7.0 h1:3jlCCIQZPdOYu1h8BkNvLz8Kgwtae2cagcG/VamtZRU=
+golang.org/x/sys v0.7.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+gorm.io/gorm v1.25.5 h1:zR9lOiiYf09VNh5Q1gphfyia1JpiClIWG9hQaxB/mls=
+gorm.io/gorm v1.25.5/go.mod h1:hbnx/Oo0ChWMn1BIhpy1oYozzpM15i4YPuHDmfYtwg8=
+modernc.org/libc v1.22.5 h1:91BNch/e5B0uPbJFgqbxXuOnxBQjlS//icfQEGmvyjE=
+modernc.org/libc v1.22.5/go.mod h1:jj+Z7dTNX8fBScMVNRAYZ/jF91K8fdT2hYMThc3YjBY=
+modernc.org/mathutil v1.5.0 h1:rV0Ko/6SfM+8G+yKiyI830l3Wuz1zRutdslNoQ0kfiQ=
+modernc.org/mathutil v1.5.0/go.mod h1:mZW8CKdRPY1v87qxC/wUdX5O1qDzXMP5TH3wjfpga6E=
+modernc.org/memory v1.5.0 h1:N+/8c5rE6EqugZwHii4IFsaJ7MUhoWX07J5tC/iI5Ds=
+modernc.org/memory v1.5.0/go.mod h1:PkUhL0Mugw21sHPeskwZW4D6VscE/GQJOnIpCnW6pSU=
+modernc.org/sqlite v1.23.1 h1:nrSBg4aRQQwq59JpvGEQ15tNxoO5pX/kUjcRNwSAGQM=
+modernc.org/sqlite v1.23.1/go.mod h1:OrDj17Mggn6MhE+iPbBNf7RGKODDE9NFT0f3EwDzJqk=
+
+##########################################################################################################################
+############################################./handlers/admin.go#############################################
+./handlers/admin.go
+package handlers
+
+import (
+	"fmt"
+	"log"
+
+	"telegram-bot/database"
+
+	"github.com/mymmrac/telego"
+	tu "github.com/mymmrac/telego/telegoutil"
+)
+
+type AdminHandler struct {
+	db      *database.Database
+	ownerID int64
+}
+
+func NewAdminHandler(db *database.Database, ownerID int64) *AdminHandler {
+	return &AdminHandler{
+		db:      db,
+		ownerID: ownerID,
+	}
+}
+
+func (a *AdminHandler) IsOwner(userID int64) bool {
+	return userID == a.ownerID
+}
+
+func (a *AdminHandler) HandleAddAdminCommand(bot *telego.Bot, update telego.Update) {
+	msg := update.Message
+	if msg == nil {
+		return
+	}
+
+	if !a.IsOwner(msg.From.ID) {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ Только владелец бота может добавлять администраторов.",
+		))
+		return
+	}
+
+	args := msg.Text
+	if len(args) < 10 {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"📝 Использование: /addadmin <ID_пользователя>\n\n"+
+				"Пример: /addadmin 123456789",
+		))
+		return
+	}
+
+	var targetUserID int64
+	_, err := fmt.Sscanf(args, "/addadmin %d", &targetUserID)
+	if err != nil || targetUserID == 0 {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ Неверный формат ID. Используйте: /addadmin <ID_пользователя>\n\n"+
+				"Пример: /addadmin 123456789",
+		))
+		return
+	}
+
+	if targetUserID == a.ownerID {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ Вы уже являетесь владельцем бота.",
+		))
+		return
+	}
+
+	if a.db.IsAdmin(targetUserID) {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			fmt.Sprintf("❌ Пользователь с ID %d уже является администратором.", targetUserID),
+		))
+		return
+	}
+
+	var userName string
+	user, err := bot.GetChat(&telego.GetChatParams{
+		ChatID: tu.ID(targetUserID),
+	})
+	if err != nil {
+		userName = fmt.Sprintf("user_%d", targetUserID)
+		log.Printf("Не удалось получить информацию о пользователе %d: %v", targetUserID, err)
+	} else {
+		if user.Type == "private" {
+			userName = user.FirstName
+			if user.Username != "" {
+				userName = user.Username
+			}
+		} else {
+			userName = user.Title
+		}
+	}
+
+	err = a.db.AddAdmin(targetUserID, userName)
+	if err != nil {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ Ошибка при добавлении администратора: "+err.Error(),
+		))
+		return
+	}
+
+	successMsg := fmt.Sprintf("✅ Пользователь %s (ID: %d) добавлен как администратор!", userName, targetUserID)
+	bot.SendMessage(tu.Message(
+		tu.ID(msg.Chat.ID),
+		successMsg,
+	))
+
+	log.Printf("Добавлен новый администратор: %s (ID: %d)", userName, targetUserID)
+
+	notificationMsg := "🎉 Вы были добавлены как модератор бота-предложки!\n\n" +
+		"Используйте команду /start для доступа к панели модерации."
+
+	_, err = bot.SendMessage(tu.Message(
+		tu.ID(targetUserID),
+		notificationMsg,
+	))
+	if err != nil {
+		log.Printf("Не удалось отправить уведомление пользователю %d: %v", targetUserID, err)
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"⚠️ Администратор добавлен, но не удалось отправить ему уведомление.",
+		))
+	} else {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"✅ Уведомление отправлено новому администратору.",
+		))
+	}
+}
+
+func (a *AdminHandler) HandleListAdminsCommand(bot *telego.Bot, update telego.Update) {
+	msg := update.Message
+	if msg == nil {
+		return
+	}
+
+	if !a.IsOwner(msg.From.ID) {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ Только владелец бота может просматривать список администраторов.",
+		))
+		return
+	}
+
+	admins, err := a.db.GetAdmins()
+	if err != nil {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ Ошибка при получении списка администраторов: "+err.Error(),
+		))
+		return
+	}
+
+	if len(admins) == 0 {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"📋 Список модераторов пуст.",
+		))
+		return
+	}
+
+	adminList := "📋 Список модераторов:\n\n"
+	adminList += fmt.Sprintf("👑 Владелец: ID %d\n", a.ownerID)
+
+	for i, admin := range admins {
+		adminList += fmt.Sprintf("%d. @%s (ID: %d)\n", i+1, admin.UserName, admin.UserID)
+	}
+
+	bot.SendMessage(tu.Message(
+		tu.ID(msg.Chat.ID),
+		adminList,
+	))
+}
+
+############################################################################################################
+######################################################./handlers/media.go######################################################
+./handlers/media.go
+package handlers
+
+import (
+	"fmt"
+	"log"
+
+	"telegram-bot/database"
+
+	"github.com/mymmrac/telego"
+)
+
+// MediaHandler обрабатывает медиафайлы
+type MediaHandler struct {
+	db          *database.Database
+	postMessage string
+}
+
+func NewMediaHandler(db *database.Database, postMessage string) *MediaHandler {
+	return &MediaHandler{
+		db:          db,
+		postMessage: postMessage,
+	}
+}
+
+// GetMediaInfo определяет тип медиа и file_id
+func (m *MediaHandler) GetMediaInfo(msg *telego.Message) (string, string) {
+	if len(msg.Photo) > 0 {
+		return "photo", msg.Photo[len(msg.Photo)-1].FileID
+	}
+	if msg.Document != nil {
+		return "document", msg.Document.FileID
+	}
+	if msg.Video != nil {
+		return "video", msg.Video.FileID
+	}
+	if msg.Audio != nil {
+		return "audio", msg.Audio.FileID
+	}
+	if msg.Voice != nil {
+		return "voice", msg.Voice.FileID
+	}
+	if msg.Sticker != nil {
+		return "sticker", msg.Sticker.FileID
+	}
+	if msg.VideoNote != nil {
+		return "video_note", msg.VideoNote.FileID
+	}
+	return "text", ""
+}
+
+// ExtractMessageText извлекает текст из сообщения
+func (m *MediaHandler) ExtractMessageText(msg *telego.Message) string {
+	if msg.Text != "" {
+		return msg.Text
+	}
+	if msg.Caption != "" {
+		return msg.Caption
+	}
+
+	switch {
+	case msg.Photo != nil:
+		return "🖼️ Фото"
+	case msg.Document != nil:
+		return "📄 Документ: " + msg.Document.FileName
+	case msg.Video != nil:
+		return "🎥 Видео"
+	case msg.VideoNote != nil:
+		return "📹 Кружочек (видеосообщение)"
+	case msg.Audio != nil:
+		title := "Аудио"
+		if msg.Audio.Title != "" {
+			title = msg.Audio.Title
+		}
+		return "🎵 " + title
+	case msg.Voice != nil:
+		return "🎤 Голосовое сообщение"
+	case msg.Sticker != nil:
+		return "😊 Стикер"
+	default:
+		return "📦 Медиа-контент"
+	}
+}
+
+// SendMediaForModeration отправляет медиафайл для модерации
+func (m *MediaHandler) SendMediaForModeration(bot *telego.Bot, chatID int64, message database.Message) error {
+	if message.MediaType != "text" && message.MediaFileID != "" {
+		var sendErr error
+
+		switch message.MediaType {
+		case "photo":
+			_, sendErr = bot.SendPhoto(&telego.SendPhotoParams{
+				ChatID:  telego.ChatID{ID: chatID},
+				Photo:   telego.InputFile{FileID: message.MediaFileID},
+				Caption: message.MessageText,
+			})
+		case "document":
+			_, sendErr = bot.SendDocument(&telego.SendDocumentParams{
+				ChatID:   telego.ChatID{ID: chatID},
+				Document: telego.InputFile{FileID: message.MediaFileID},
+				Caption:  message.MessageText,
+			})
+		case "video":
+			_, sendErr = bot.SendVideo(&telego.SendVideoParams{
+				ChatID:  telego.ChatID{ID: chatID},
+				Video:   telego.InputFile{FileID: message.MediaFileID},
+				Caption: message.MessageText,
+			})
+		case "video_note":
+			_, sendErr = bot.SendVideoNote(&telego.SendVideoNoteParams{
+				ChatID:    telego.ChatID{ID: chatID},
+				VideoNote: telego.InputFile{FileID: message.MediaFileID},
+			})
+		case "audio":
+			_, sendErr = bot.SendAudio(&telego.SendAudioParams{
+				ChatID:  telego.ChatID{ID: chatID},
+				Audio:   telego.InputFile{FileID: message.MediaFileID},
+				Caption: message.MessageText,
+			})
+		case "voice":
+			_, sendErr = bot.SendVoice(&telego.SendVoiceParams{
+				ChatID:  telego.ChatID{ID: chatID},
+				Voice:   telego.InputFile{FileID: message.MediaFileID},
+				Caption: message.MessageText,
+			})
+		case "sticker":
+			_, sendErr = bot.SendSticker(&telego.SendStickerParams{
+				ChatID:  telego.ChatID{ID: chatID},
+				Sticker: telego.InputFile{FileID: message.MediaFileID},
+			})
+		}
+
+		if sendErr != nil {
+			log.Printf("Ошибка отправки медиа для модерации: %v", sendErr)
+			// Если не удалось отправить медиа, отправляем текстовое описание
+			_, err := bot.SendMessage(&telego.SendMessageParams{
+				ChatID: telego.ChatID{ID: chatID},
+				Text:   fmt.Sprintf("❌ Не удалось отобразить медиафайл (тип: %s)\n💬 Описание: %s", message.MediaType, message.MessageText),
+			})
+			return err
+		}
+	} else {
+		// Для текстовых сообщений просто отправляем текст
+		_, err := bot.SendMessage(&telego.SendMessageParams{
+			ChatID: telego.ChatID{ID: chatID},
+			Text:   fmt.Sprintf("💬 Текст предложения:\n%s", message.MessageText),
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (m *MediaHandler) PublishMedia(bot *telego.Bot, channelID int64, message database.Message) error {
+	var sendErr error
+
+	switch message.MediaType {
+	case "photo":
+		_, sendErr = bot.SendPhoto(&telego.SendPhotoParams{
+			ChatID:  telego.ChatID{ID: channelID},
+			Photo:   telego.InputFile{FileID: message.MediaFileID},
+			Caption: message.MessageText,
+		})
+	case "document":
+		_, sendErr = bot.SendDocument(&telego.SendDocumentParams{
+			ChatID:   telego.ChatID{ID: channelID},
+			Document: telego.InputFile{FileID: message.MediaFileID},
+			Caption:  message.MessageText,
+		})
+	case "video":
+		_, sendErr = bot.SendVideo(&telego.SendVideoParams{
+			ChatID:  telego.ChatID{ID: channelID},
+			Video:   telego.InputFile{FileID: message.MediaFileID},
+			Caption: message.MessageText,
+		})
+	case "video_note":
+		_, sendErr = bot.SendVideoNote(&telego.SendVideoNoteParams{
+			ChatID:    telego.ChatID{ID: channelID},
+			VideoNote: telego.InputFile{FileID: message.MediaFileID},
+		})
+	case "audio":
+		_, sendErr = bot.SendAudio(&telego.SendAudioParams{
+			ChatID:  telego.ChatID{ID: channelID},
+			Audio:   telego.InputFile{FileID: message.MediaFileID},
+			Caption: message.MessageText,
+		})
+	case "voice":
+		_, sendErr = bot.SendVoice(&telego.SendVoiceParams{
+			ChatID:  telego.ChatID{ID: channelID},
+			Voice:   telego.InputFile{FileID: message.MediaFileID},
+			Caption: message.MessageText,
+		})
+	case "sticker":
+		_, sendErr = bot.SendSticker(&telego.SendStickerParams{
+			ChatID:  telego.ChatID{ID: channelID},
+			Sticker: telego.InputFile{FileID: message.MediaFileID},
+		})
+	default: // text
+		_, sendErr = bot.SendMessage(&telego.SendMessageParams{
+			ChatID: telego.ChatID{ID: channelID},
+			Text:   fmt.Sprintf("💡 Новое предложение:\n\n%s\n\n%s", message.MessageText, m.postMessage),
+		})
+	}
+
+	return sendErr
+}
+
+###############################################################################################################################
+#################################################./handlers/moderation.go#################################################
+./handlers/moderation.go
+package handlers
+
+import (
+	"fmt"
+	"log"
+
+	"telegram-bot/database"
+
+	"github.com/mymmrac/telego"
+	tu "github.com/mymmrac/telego/telegoutil"
+)
+
+type ModerationHandler struct {
+	db        *database.Database
+	media     *MediaHandler
+	channelID int64
+	ownerID   int64
+}
+
+func NewModerationHandler(db *database.Database, media *MediaHandler, channelID, ownerID int64) *ModerationHandler {
+	return &ModerationHandler{
+		db:        db,
+		media:     media,
+		channelID: channelID,
+		ownerID:   ownerID,
+	}
+}
+
+func (m *ModerationHandler) HandleProposalsCommand(bot *telego.Bot, update telego.Update) {
+	msg := update.Message
+	if msg == nil {
+		return
+	}
+	m.ShowProposals(bot, msg.Chat.ID, msg.From.ID)
+}
+
+func (m *ModerationHandler) ShowProposals(bot *telego.Bot, chatID int64, userID int64) {
+	if !m.db.IsAdmin(userID) && userID != m.ownerID {
+		bot.SendMessage(tu.Message(
+			tu.ID(chatID),
+			"❌ У вас нет доступа к этой функции.",
+		))
+		return
+	}
+
+	messages, err := m.db.GetPendingMessages()
+	if err != nil {
+		bot.SendMessage(tu.Message(
+			tu.ID(chatID),
+			"❌ Ошибка при получении предложений: "+err.Error(),
+		))
+		return
+	}
+
+	if len(messages) == 0 {
+		bot.SendMessage(tu.Message(
+			tu.ID(chatID),
+			"✅ Нет новых предложений для модерации.",
+		))
+		return
+	}
+
+	bot.SendMessage(tu.Message(
+		tu.ID(chatID),
+		fmt.Sprintf("📨 Найдено %d предложений для модерации:", len(messages)),
+	))
+
+	m.SendMessageForModeration(bot, chatID, messages[0])
+}
+
+func (m *ModerationHandler) SendMessageForModeration(bot *telego.Bot, chatID int64, message database.Message) {
+
+	if err := m.media.SendMediaForModeration(bot, chatID, message); err != nil {
+		log.Printf("Ошибка при отправке медиа для модерации: %v", err)
+	}
+
+	text := fmt.Sprintf(
+		"📨 Анонимное предложение #%d\n\n"+
+			"⏰ Время: %s\n\n"+
+			"Выберите действие:",
+		message.MessageID,
+		message.CreatedAt.Format("02.01.2006 15:04"),
+	)
+
+	keyboard := tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			tu.InlineKeyboardButton("✅ ОДОБРИТЬ").WithCallbackData(fmt.Sprintf("approve_%d", message.MessageID)),
+			tu.InlineKeyboardButton("❌ ОТКЛОНИТЬ").WithCallbackData(fmt.Sprintf("reject_%d", message.MessageID)),
+		),
+	)
+
+	bot.SendMessage(tu.Message(
+		tu.ID(chatID),
+		text,
+	).WithReplyMarkup(keyboard))
+}
+
+func (m *ModerationHandler) HandlePardonCommand(bot *telego.Bot, update telego.Update) {
+	msg := update.Message
+	if msg == nil {
+		return
+	}
+	senderID := update.Message.Chat.ID
+
+	if !m.db.IsAdmin(senderID) && senderID != m.ownerID {
+		return
+	}
+	args := msg.Text
+	if len(args) < 8 {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"📝 Использование: /pardon <ID_пользователя>\n\n"+
+				"Пример: /pardon 123456789",
+		))
+		return
+	}
+	var targetUserID int64
+	_, err := fmt.Sscanf(args, "/pardon %d", &targetUserID)
+	if err != nil || targetUserID == 0 {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ Неверный формат ID. Используйте: /pardon <ID_пользователя>\n\n"+
+				"Пример: /pardon 123456789",
+		))
+		return
+	}
+	err = m.db.PardonUser(targetUserID)
+	if err != nil {
+		log.Printf("Ошибка разбана юзера %d:%s", targetUserID, err)
+		return
+	}
+	bot.SendMessage(tu.Message(tu.ID(targetUserID), "Вы разаблокированы"))
+	bot.SendMessage(tu.Message(tu.ID(msg.Chat.ID), fmt.Sprintf("Пользователь %d успешно разбанен", targetUserID)))
+
+}
+
+func (m *ModerationHandler) HandleCallback(bot *telego.Bot, update telego.Update) {
+
+	callback := update.CallbackQuery
+	if callback == nil {
+		return
+	}
+	log.Printf("Вызов callback: %s", callback.ID)
+	userID := callback.From.ID
+	chatID := callback.Message.Chat.ID
+
+	if !m.db.IsAdmin(userID) && userID != m.ownerID {
+		bot.AnswerCallbackQuery(tu.CallbackQuery(
+			callback.ID,
+		).WithText("❌ У вас нет доступа."))
+		return
+	}
+
+	data := callback.Data
+	var messageID int
+	var senderID int
+
+	if n, _ := fmt.Sscanf(data, "approve_%d", &messageID); n == 1 {
+		m.HandleApprove(bot, chatID, messageID, callback)
+	} else if n, _ := fmt.Sscanf(data, "reject_%d", &messageID); n == 1 {
+		m.HandleReject(bot, chatID, messageID, callback)
+	} else if n, _ := fmt.Sscanf(data, "reason_%d", &senderID); n == 1 {
+		m.HandleReason(bot, chatID, senderID, callback)
+	} else if n, _ := fmt.Sscanf(data, "ban_reason_%d", &senderID); n == 1 {
+		m.HandleBanReason(bot, chatID, senderID, callback)
+	} else if n, _ := fmt.Sscanf(data, "next"); n == 0 {
+		m.HandleNext(bot, chatID, messageID, callback)
+	} else {
+		log.Printf("Ни один хендлер не обрабатывает данный калбек: %d", n)
+	}
+}
+
+func (m *ModerationHandler) HandleNext(bot *telego.Bot, chatID int64, messageID int, callback *telego.CallbackQuery) {
+	log.Printf("Вызов Next хендлера")
+	m.ShowProposals(bot, chatID, chatID)
+	bot.AnswerCallbackQuery(tu.CallbackQuery(callback.ID).WithText("хуй"))
+}
+
+func (m *ModerationHandler) HandleReason(bot *telego.Bot, chatID int64, senderID int, callback *telego.CallbackQuery) {
+	bot.SendMessage(tu.Message(tu.ID(chatID), "Введите причину отказа"))
+	m.db.UpdateAdminState(chatID, "reason")
+	log.Printf("senderID: %d", senderID)
+	m.db.UpdateAdminReason(chatID, int64(senderID))
+	bot.AnswerCallbackQuery(tu.CallbackQuery(callback.ID).WithText("хуй"))
+
+}
+
+func (m *ModerationHandler) HandleBanReason(bot *telego.Bot, chatID int64, senderID int, callback *telego.CallbackQuery) {
+	bot.SendMessage(tu.Message(tu.ID(chatID), "Введите причину блокировки"))
+	m.db.UpdateAdminState(chatID, "ban_reason")
+	log.Printf("senderID: %d", senderID)
+	m.db.UpdateAdminReason(chatID, int64(senderID))
+	bot.AnswerCallbackQuery(tu.CallbackQuery(callback.ID).WithText("Good"))
+}
+func (m *ModerationHandler) HandleApprove(bot *telego.Bot, chatID int64, messageID int, callback *telego.CallbackQuery) {
+	message, err := m.db.GetMessageByID(messageID)
+	if err != nil {
+		bot.AnswerCallbackQuery(tu.CallbackQuery(
+			callback.ID,
+		).WithText("❌ Ошибка: предложение не найдено"))
+		return
+	}
+
+	if err := m.media.PublishMedia(bot, m.channelID, message); err != nil {
+		log.Printf("Ошибка отправки в канал: %v", err)
+		bot.AnswerCallbackQuery(tu.CallbackQuery(
+			callback.ID,
+		).WithText("❌ Ошибка при публикации"))
+		return
+	}
+
+	m.db.UpdateMessageStatus(messageID, "approved")
+	m.db.DeleteMessage(messageID)
+
+	bot.AnswerCallbackQuery(tu.CallbackQuery(
+		callback.ID,
+	).WithText("✅ Предложение опубликовано!"))
+
+	bot.DeleteMessage(&telego.DeleteMessageParams{
+		ChatID:    tu.ID(chatID),
+		MessageID: callback.Message.MessageID,
+	})
+
+	m.ShowProposals(bot, chatID, callback.From.ID)
+}
+
+func (m *ModerationHandler) HandleReject(bot *telego.Bot, chatID int64, messageID int, callback *telego.CallbackQuery) {
+	msg, err := m.db.GetMessageByID(messageID)
+	if err != nil {
+		bot.AnswerCallbackQuery(tu.CallbackQuery(
+			callback.ID,
+		).WithText("❌ Ошибка: предложение не найдено"))
+		return
+	}
+	senderID := msg.SenderID
+	m.db.UpdateMessageStatus(messageID, "rejected")
+	m.db.DeleteMessage(messageID)
+	bot.SendMessage(tu.Message(tu.ID(chatID), ""))
+	bot.AnswerCallbackQuery(tu.CallbackQuery(
+		callback.ID,
+	).WithText("✅ Предложение отклонено!"))
+
+	bot.DeleteMessage(&telego.DeleteMessageParams{
+		ChatID:    tu.ID(chatID),
+		MessageID: callback.Message.MessageID,
+	})
+	log.Printf("senderID: %d", senderID)
+	kb := tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			tu.InlineKeyboardButton("Причина").WithCallbackData(fmt.Sprintf("reason_%d", senderID)),
+			tu.InlineKeyboardButton("Далее").WithCallbackData("next"),
+			tu.InlineKeyboardButton("Бан").WithCallbackData(fmt.Sprintf("ban_reason_%d", senderID)),
+		),
+	)
+	bot.SendMessage(tu.Message(tu.ID(chatID), "Выберете действие").WithReplyMarkup(kb))
+}
+
+##########################################################################################################################
+#############################################################./handlers/proposals.go#############################################################
+./handlers/proposals.go
+package handlers
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"telegram-bot/database"
+
+	"github.com/mymmrac/telego"
+	tu "github.com/mymmrac/telego/telegoutil"
+)
+
+const welcomeText = `🤖 Добро пожаловать в анонимную предложку!
+
+Просто отправьте сюда ваше предложение, идею или сообщение, и оно будет анонимно рассмотрено модераторами.
+
+Ваша личность будет скрыта - модераторы увидят только содержание вашего сообщения.
+
+❓ Что можно отправлять:
+• Текстовые предложения
+• Фотографии
+• Документы
+• Видео
+• Кружочки (видеосообщения)
+• Аудио и голосовые сообщения
+• Стикеры
+• Идеи и пожелания
+
+Ваше предложение будет рассмотрено в ближайшее время!`
+
+type ProposalsHandler struct {
+	db        *database.Database
+	media     *MediaHandler
+	channelID int64
+	ownerID   int64
+}
+
+func NewProposalsHandler(db *database.Database, media *MediaHandler, channelID, ownerID int64) *ProposalsHandler {
+	return &ProposalsHandler{
+		db:        db,
+		media:     media,
+		channelID: channelID,
+		ownerID:   ownerID,
+	}
+}
+
+func (p *ProposalsHandler) HandleUserProposal(bot *telego.Bot, update telego.Update) {
+	log.Printf("Обрабротка предложения")
+	msg := update.Message
+	if msg == nil {
+		return
+	}
+
+	userID := msg.From.ID
+	chatID := msg.Chat.ID
+	if p.db.IsBanned(userID) {
+		bot.SendMessage(tu.Message(tu.ID(userID), "Вы заблокированы"))
+		return
+	}
+	if msg.Chat.Type != "private" {
+		return
+	}
+
+	if msg.Text != "" && msg.Text[0] == '/' {
+		return
+	}
+
+	if p.db.IsAdmin(userID) || userID == p.ownerID {
+		if state, _ := p.db.GetAdminState(userID); state == "reason" {
+			log.Printf("Обработка причины")
+			reasonUser, err := p.db.GetAdminReason(userID)
+			if err != nil {
+				log.Printf("Ошибка получения юзера для написания причины")
+				return
+			}
+			log.Printf("Юзер для отправки причины: %d", reasonUser)
+			bot.SendMessage(tu.Message(tu.ID(reasonUser), fmt.Sprintf("Ваше сообщение отклонено по причине: %s", msg.Text)))
+			kb := tu.InlineKeyboard(
+				tu.InlineKeyboardRow(
+					tu.InlineKeyboardButton("Далее").WithCallbackData("next"),
+				),
+			)
+			bot.SendMessage(tu.Message(tu.ID(msg.From.ID), "Причина отправленна").WithReplyMarkup(kb))
+			p.db.UpdateAdminReason(userID, 0)
+			p.db.UpdateAdminState(userID, "standart")
+			return
+		} else if state, _ := p.db.GetAdminState(userID); state == "ban_reason" {
+			log.Printf("Обработка причины блокировки")
+			reasonUser, err := p.db.GetAdminReason(userID)
+			if err != nil {
+				log.Printf("Ошибка получения юзера для написания причины")
+				return
+			}
+			log.Printf("Юзер для отправки причины: %d", reasonUser)
+			err = p.db.BanUser(reasonUser)
+			if err != nil {
+				log.Printf("Ошибка блокировки юзера: %d", reasonUser)
+				bot.SendMessage(tu.Message(tu.ID(reasonUser), "Ошибка при блокировке юзера, обратитесь к тех. администратору"))
+				p.db.UpdateAdminReason(userID, 0)
+				p.db.UpdateAdminState(userID, "standart")
+				return
+			}
+			bot.SendMessage(tu.Message(tu.ID(reasonUser), fmt.Sprintf("Вы заблокированы по причине: %s", msg.Text)))
+			p.db.UpdateAdminReason(userID, 0)
+			p.db.UpdateAdminState(userID, "standart")
+			bot.SendMessage(tu.Message(tu.ID(chatID), "Пользователь успешно заблокирован"))
+			return
+		}
+	}
+
+	if msg.Text == "" && msg.Photo == nil && msg.Document == nil &&
+		msg.Video == nil && msg.VideoNote == nil && msg.Audio == nil &&
+		msg.Voice == nil && msg.Sticker == nil {
+		return
+	}
+
+	log.Printf("📨 Новое предложение от пользователя %d", userID)
+
+	mediaType, mediaFileID := p.media.GetMediaInfo(msg)
+	messageText := p.media.ExtractMessageText(msg)
+
+	message := &database.Message{
+		MessageID:   msg.MessageID,
+		SenderID:    uint(userID),
+		MessageText: messageText,
+		MediaType:   mediaType,
+		MediaFileID: mediaFileID,
+		CreatedAt:   time.Now(),
+		Status:      "pending",
+		ChannelID:   p.channelID,
+	}
+
+	if err := p.db.SaveMessage(message); err != nil {
+		log.Printf("Ошибка сохранения предложения: %v", err)
+		bot.SendMessage(tu.Message(
+			tu.ID(chatID),
+			"❌ Произошла ошибка при отправке предложения. Попробуйте позже.",
+		))
+		return
+	}
+
+	bot.SendMessage(tu.Message(
+		tu.ID(chatID),
+		"✅ Ваше предложение принято! Оно будет рассмотрено модераторами анонимно.",
+	))
+
+	log.Printf("✅ Предложение сохранено: %s (тип: %s)", messageText, mediaType)
+
+	p.notifyAdminsAboutNewProposal(bot, message)
+}
+
+func (p *ProposalsHandler) notifyAdminsAboutNewProposal(bot *telego.Bot, message *database.Message) {
+	admins, err := p.db.GetAdmins()
+	if err != nil {
+		log.Printf("Ошибка получения списка администраторов: %v", err)
+		return
+	}
+
+	notification := fmt.Sprintf(
+		"📨 Поступило новое анонимное предложение!\n\n"+
+			"ID Предложения: %d\n\n"+
+			"💬 Текст: %s\n"+
+			"📁 Тип: %s\n\n"+
+			"Используйте /proposals для просмотра всех предложений.",
+		message.ID,
+		message.MessageText,
+		message.MediaType,
+	)
+
+	for _, admin := range admins {
+		_, err := bot.SendMessage(tu.Message(
+			tu.ID(admin.UserID),
+			notification,
+		))
+		if err != nil {
+			log.Printf("Ошибка отправки уведомления администратору %d: %v", admin.UserID, err)
+		}
+	}
+}
+
+func (p *ProposalsHandler) HandleStartCommand(bot *telego.Bot, update telego.Update) {
+	msg := update.Message
+	if msg == nil {
+		return
+	}
+
+	userID := msg.From.ID
+	chatID := msg.Chat.ID
+
+	log.Printf("Обработка /start от пользователя %d", userID)
+
+	if p.db.IsAdmin(userID) || userID == p.ownerID {
+
+		var messageText string
+
+		if userID == p.ownerID {
+			messageText = "👑 Панель владельца\n\nЭто бот для анонимных предложений. Пользователи присылают предложения в ЛС, а вы их модерируете.\n\n" +
+				"Доступные команды:\n" +
+				"/addadmin <ID> - добавить администратора\n" +
+				"/admins - список администраторов\n" +
+				"/proposals - просмотр предложений"
+
+		} else {
+			messageText = "🛠️ Панель модератора\n\nЭто бот для анонимных предложений. Пользователи присылают предложения в ЛС, а вы их модерируете.\n\n" +
+				"Доступные команды:\n" +
+				"/proposals - просмотр предложений"
+		}
+
+		bot.SendMessage(tu.Message(
+			tu.ID(chatID),
+			messageText,
+		))
+	} else {
+
+		bot.SendMessage(tu.Message(
+			tu.ID(chatID),
+			welcomeText,
+		))
+	}
+}
+
+#################################################################################################################################################
+#######################################./main.go########################################
+./main.go
+package main
+
+import (
+	"log"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"telegram-bot/bot"
+
+	"github.com/joho/godotenv"
+)
+
+func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Printf("Не удалось загрузить dotenv использую переменные окружения")
+	}
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if token == "" {
+		log.Fatal("TELEGRAM_BOT_TOKEN не установлен")
+	}
+	ownerID, err := strconv.Atoi(os.Getenv("OWNER_ID"))
+	if err != nil {
+		log.Fatalf("Ошибка айди владельца не должен быть пустым")
+	}
+	ownerName := os.Getenv("OWNER_NAME")
+	channelID, err := strconv.Atoi(os.Getenv("CHANNEL_ID"))
+	if err != nil {
+		log.Fatal("Ошибка айди канала не должен быть пустым")
+	}
+
+	postMessage := os.Getenv("POST_MESSAGE")
+
+	bot, err := bot.NewBot(token, int64(channelID), int64(ownerID), ownerName, postMessage)
+	if err != nil {
+		log.Fatalf("Ошибка создания бота: %v", err)
+	}
+
+	bot.Start()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
+
+	bot.Stop()
+}
+
+########################################################################################

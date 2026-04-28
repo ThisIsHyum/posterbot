@@ -14,7 +14,7 @@ import (
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Printf("Не удалось загрузить dotenv использую переменные окружения")
+		log.Printf("Не удалось загрузить .env, использую переменные окружения")
 	}
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	if token == "" {
@@ -22,17 +22,19 @@ func main() {
 	}
 	ownerID, err := strconv.Atoi(os.Getenv("OWNER_ID"))
 	if err != nil {
-		log.Fatalf("Ошибка айди владельца не должен быть пустым")
+		log.Fatal("OWNER_ID должен быть числом")
 	}
 	ownerName := os.Getenv("OWNER_NAME")
 	channelID, err := strconv.Atoi(os.Getenv("CHANNEL_ID"))
 	if err != nil {
-		log.Fatal("Ошибка айди канала не должен быть пустым")
+		log.Fatal("CHANNEL_ID должен быть числом")
+	}
+	botUsername := os.Getenv("BOT_USERNAME")
+	if botUsername == "" {
+		log.Fatal("BOT_USERNAME не установлен")
 	}
 
-	postMessage := os.Getenv("POST_MESSAGE")
-
-	bot, err := bot.NewBot(token, int64(channelID), int64(ownerID), ownerName, postMessage)
+	bot, err := bot.NewBot(token, int64(channelID), int64(ownerID), ownerName, botUsername)
 	if err != nil {
 		log.Fatalf("Ошибка создания бота: %v", err)
 	}

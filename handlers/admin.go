@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"log"
 
 	"telegram-bot/database"
 
@@ -72,7 +71,7 @@ func (a *AdminHandler) HandleAddAdminCommand(bot *telego.Bot, update telego.Upda
 	if a.db.IsAdmin(targetUserID) {
 		bot.SendMessage(tu.Message(
 			tu.ID(msg.Chat.ID),
-			fmt.Sprintf("❌ Пользователь с ID %d уже является администратором.", targetUserID),
+			fmt.Sprintf("❌ Пользователь уже является администратором.", targetUserID),
 		))
 		return
 	}
@@ -83,7 +82,6 @@ func (a *AdminHandler) HandleAddAdminCommand(bot *telego.Bot, update telego.Upda
 	})
 	if err != nil {
 		userName = fmt.Sprintf("user_%d", targetUserID)
-		log.Printf("Не удалось получить информацию о пользователе %d: %v", targetUserID, err)
 	} else {
 		if user.Type == "private" {
 			userName = user.FirstName
@@ -104,33 +102,19 @@ func (a *AdminHandler) HandleAddAdminCommand(bot *telego.Bot, update telego.Upda
 		return
 	}
 
-	successMsg := fmt.Sprintf("✅ Пользователь %s (ID: %d) добавлен как администратор!", userName, targetUserID)
+	successMsg := fmt.Sprintf("✅ Пользователь %s добавлен как администратор!", userName)
 	bot.SendMessage(tu.Message(
 		tu.ID(msg.Chat.ID),
 		successMsg,
 	))
 
-	log.Printf("Добавлен новый администратор: %s (ID: %d)", userName, targetUserID)
-
 	notificationMsg := "🎉 Вы были добавлены как модератор бота-предложки!\n\n" +
 		"Используйте команду /start для доступа к панели модерации."
 
-	_, err = bot.SendMessage(tu.Message(
+	_, _ = bot.SendMessage(tu.Message(
 		tu.ID(targetUserID),
 		notificationMsg,
 	))
-	if err != nil {
-		log.Printf("Не удалось отправить уведомление пользователю %d: %v", targetUserID, err)
-		bot.SendMessage(tu.Message(
-			tu.ID(msg.Chat.ID),
-			"⚠️ Администратор добавлен, но не удалось отправить ему уведомление.",
-		))
-	} else {
-		bot.SendMessage(tu.Message(
-			tu.ID(msg.Chat.ID),
-			"✅ Уведомление отправлено новому администратору.",
-		))
-	}
 }
 
 func (a *AdminHandler) HandleListAdminsCommand(bot *telego.Bot, update telego.Update) {
@@ -168,11 +152,58 @@ func (a *AdminHandler) HandleListAdminsCommand(bot *telego.Bot, update telego.Up
 	adminList += fmt.Sprintf("👑 Владелец: ID %d\n", a.ownerID)
 
 	for i, admin := range admins {
-		adminList += fmt.Sprintf("%d. @%s (ID: %d)\n", i+1, admin.UserName, admin.UserID)
+		adminList += fmt.Sprintf("%d. @%s\n", i+1, admin.UserName)
 	}
 
 	bot.SendMessage(tu.Message(
 		tu.ID(msg.Chat.ID),
 		adminList,
+	))
+}
+
+func (a *AdminHandler) HandleBannedCommand(bot *telego.Bot, update telego.Update) {
+	msg := update.Message
+	if msg == nil {
+		return
+	}
+
+	if !a.db.IsAdmin(msg.From.ID) && msg.From.ID != a.ownerID {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ У вас нет доступа к этой функции.",
+		))
+		return
+	}
+
+	records, err := a.db.GetActiveBanRecords()
+	if err != nil {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"❌ Ошибка при получении списка банов: "+err.Error(),
+		))
+		return
+	}
+
+	if len(records) == 0 {
+		bot.SendMessage(tu.Message(
+			tu.ID(msg.Chat.ID),
+			"✅ Список банов пуст.",
+		))
+		return
+	}
+
+	banList := "🚫 Активные блокировки:\n\n"
+	for i, record := range records {
+		banList += fmt.Sprintf("%d. %s\n   Причина: %s\n   Дата: %s\n",
+			i+1,
+			record.BanID,
+			record.Reason,
+			record.CreatedAt.Format("02.01.2006 15:04"),
+		)
+	}
+
+	bot.SendMessage(tu.Message(
+		tu.ID(msg.Chat.ID),
+		banList,
 	))
 }

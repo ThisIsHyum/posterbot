@@ -4,6 +4,8 @@ go 1.21
 
 require (
 	github.com/glebarez/sqlite v1.10.0
+	github.com/google/uuid v1.6.0
+	github.com/joho/godotenv v1.5.1
 	github.com/mymmrac/telego v0.25.0
 	gorm.io/gorm v1.25.5
 )
@@ -14,10 +16,8 @@ require (
 	github.com/fasthttp/router v1.4.19 // indirect
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
-	github.com/google/uuid v1.3.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
-	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/klauspost/compress v1.16.5 // indirect
 	github.com/mattn/go-isatty v0.0.17 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

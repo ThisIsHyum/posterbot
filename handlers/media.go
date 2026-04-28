@@ -2,14 +2,13 @@ package handlers
 
 import (
 	"fmt"
-	"log"
+	"strings"
 
 	"telegram-bot/database"
 
 	"github.com/mymmrac/telego"
 )
 
-// MediaHandler обрабатывает медиафайлы
 type MediaHandler struct {
 	db          *database.Database
 	postMessage string
@@ -22,7 +21,14 @@ func NewMediaHandler(db *database.Database, postMessage string) *MediaHandler {
 	}
 }
 
-// GetMediaInfo определяет тип медиа и file_id
+func escapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	return s
+}
+
 func (m *MediaHandler) GetMediaInfo(msg *telego.Message) (string, string) {
 	if len(msg.Photo) > 0 {
 		return "photo", msg.Photo[len(msg.Photo)-1].FileID
@@ -48,7 +54,6 @@ func (m *MediaHandler) GetMediaInfo(msg *telego.Message) (string, string) {
 	return "text", ""
 }
 
-// ExtractMessageText извлекает текст из сообщения
 func (m *MediaHandler) ExtractMessageText(msg *telego.Message) string {
 	if msg.Text != "" {
 		return msg.Text
@@ -81,7 +86,6 @@ func (m *MediaHandler) ExtractMessageText(msg *telego.Message) string {
 	}
 }
 
-// SendMediaForModeration отправляет медиафайл для модерации
 func (m *MediaHandler) SendMediaForModeration(bot *telego.Bot, chatID int64, message database.Message) error {
 	if message.MediaType != "text" && message.MediaFileID != "" {
 		var sendErr error
@@ -130,8 +134,6 @@ func (m *MediaHandler) SendMediaForModeration(bot *telego.Bot, chatID int64, mes
 		}
 
 		if sendErr != nil {
-			log.Printf("Ошибка отправки медиа для модерации: %v", sendErr)
-			// Если не удалось отправить медиа, отправляем текстовое описание
 			_, err := bot.SendMessage(&telego.SendMessageParams{
 				ChatID: telego.ChatID{ID: chatID},
 				Text:   fmt.Sprintf("❌ Не удалось отобразить медиафайл (тип: %s)\n💬 Описание: %s", message.MediaType, message.MessageText),
@@ -139,7 +141,6 @@ func (m *MediaHandler) SendMediaForModeration(bot *telego.Bot, chatID int64, mes
 			return err
 		}
 	} else {
-		// Для текстовых сообщений просто отправляем текст
 		_, err := bot.SendMessage(&telego.SendMessageParams{
 			ChatID: telego.ChatID{ID: chatID},
 			Text:   fmt.Sprintf("💬 Текст предложения:\n%s", message.MessageText),
@@ -152,56 +153,97 @@ func (m *MediaHandler) SendMediaForModeration(bot *telego.Bot, chatID int64, mes
 	return nil
 }
 
-func (m *MediaHandler) PublishMedia(bot *telego.Bot, channelID int64, message database.Message) error {
+func (m *MediaHandler) PublishMedia(bot *telego.Bot, channelID int64, message database.Message, botUsername string, replyToMsgID int) (*telego.Message, error) {
+	var sentMsg *telego.Message
 	var sendErr error
+
+	// Оборачиваем пользовательский текст в цитату, предварительно экранируя HTML
+	escapedText := escapeHTML(message.MessageText)
+	quotedText := fmt.Sprintf("<blockquote>%s</blockquote>", escapedText)
+
+	var baseCaption string
+	if message.ParentMessageID != nil {
+		baseCaption = "💬 Ответ:\n\n" + quotedText
+	} else {
+		baseCaption = quotedText
+	}
+
+	// Гиперссылка остаётся снаружи цитаты
+	replyLink := fmt.Sprintf("\n\n<a href=\"https://t.me/%s?start=reply_%d\">💬 Ответить</a>", botUsername, message.ID)
+	safeCaption := baseCaption + replyLink
+
+	disablePreview := true
 
 	switch message.MediaType {
 	case "photo":
-		_, sendErr = bot.SendPhoto(&telego.SendPhotoParams{
-			ChatID:  telego.ChatID{ID: channelID},
-			Photo:   telego.InputFile{FileID: message.MediaFileID},
-			Caption: message.MessageText,
-		})
+		params := &telego.SendPhotoParams{
+			ChatID:           telego.ChatID{ID: channelID},
+			Photo:            telego.InputFile{FileID: message.MediaFileID},
+			Caption:          safeCaption,
+			ParseMode:        "HTML",
+			ReplyToMessageID: replyToMsgID,
+		}
+		sentMsg, sendErr = bot.SendPhoto(params)
 	case "document":
-		_, sendErr = bot.SendDocument(&telego.SendDocumentParams{
-			ChatID:   telego.ChatID{ID: channelID},
-			Document: telego.InputFile{FileID: message.MediaFileID},
-			Caption:  message.MessageText,
-		})
+		params := &telego.SendDocumentParams{
+			ChatID:           telego.ChatID{ID: channelID},
+			Document:         telego.InputFile{FileID: message.MediaFileID},
+			Caption:          safeCaption,
+			ParseMode:        "HTML",
+			ReplyToMessageID: replyToMsgID,
+		}
+		sentMsg, sendErr = bot.SendDocument(params)
 	case "video":
-		_, sendErr = bot.SendVideo(&telego.SendVideoParams{
-			ChatID:  telego.ChatID{ID: channelID},
-			Video:   telego.InputFile{FileID: message.MediaFileID},
-			Caption: message.MessageText,
-		})
+		params := &telego.SendVideoParams{
+			ChatID:           telego.ChatID{ID: channelID},
+			Video:            telego.InputFile{FileID: message.MediaFileID},
+			Caption:          safeCaption,
+			ParseMode:        "HTML",
+			ReplyToMessageID: replyToMsgID,
+		}
+		sentMsg, sendErr = bot.SendVideo(params)
 	case "video_note":
-		_, sendErr = bot.SendVideoNote(&telego.SendVideoNoteParams{
-			ChatID:    telego.ChatID{ID: channelID},
-			VideoNote: telego.InputFile{FileID: message.MediaFileID},
-		})
+		params := &telego.SendVideoNoteParams{
+			ChatID:           telego.ChatID{ID: channelID},
+			VideoNote:        telego.InputFile{FileID: message.MediaFileID},
+			ReplyToMessageID: replyToMsgID,
+		}
+		sentMsg, sendErr = bot.SendVideoNote(params)
 	case "audio":
-		_, sendErr = bot.SendAudio(&telego.SendAudioParams{
-			ChatID:  telego.ChatID{ID: channelID},
-			Audio:   telego.InputFile{FileID: message.MediaFileID},
-			Caption: message.MessageText,
-		})
+		params := &telego.SendAudioParams{
+			ChatID:           telego.ChatID{ID: channelID},
+			Audio:            telego.InputFile{FileID: message.MediaFileID},
+			Caption:          safeCaption,
+			ParseMode:        "HTML",
+			ReplyToMessageID: replyToMsgID,
+		}
+		sentMsg, sendErr = bot.SendAudio(params)
 	case "voice":
-		_, sendErr = bot.SendVoice(&telego.SendVoiceParams{
-			ChatID:  telego.ChatID{ID: channelID},
-			Voice:   telego.InputFile{FileID: message.MediaFileID},
-			Caption: message.MessageText,
-		})
+		params := &telego.SendVoiceParams{
+			ChatID:           telego.ChatID{ID: channelID},
+			Voice:            telego.InputFile{FileID: message.MediaFileID},
+			Caption:          safeCaption,
+			ParseMode:        "HTML",
+			ReplyToMessageID: replyToMsgID,
+		}
+		sentMsg, sendErr = bot.SendVoice(params)
 	case "sticker":
-		_, sendErr = bot.SendSticker(&telego.SendStickerParams{
-			ChatID:  telego.ChatID{ID: channelID},
-			Sticker: telego.InputFile{FileID: message.MediaFileID},
-		})
-	default: // text
-		_, sendErr = bot.SendMessage(&telego.SendMessageParams{
-			ChatID: telego.ChatID{ID: channelID},
-			Text:   fmt.Sprintf("💡 Новое предложение:\n\n%s\n\n%s", message.MessageText, m.postMessage),
-		})
+		params := &telego.SendStickerParams{
+			ChatID:           telego.ChatID{ID: channelID},
+			Sticker:          telego.InputFile{FileID: message.MediaFileID},
+			ReplyToMessageID: replyToMsgID,
+		}
+		sentMsg, sendErr = bot.SendSticker(params)
+	default:
+		params := &telego.SendMessageParams{
+			ChatID:                telego.ChatID{ID: channelID},
+			Text:                  safeCaption,
+			ParseMode:             "HTML",
+			DisableWebPagePreview: disablePreview,
+			ReplyToMessageID:      replyToMsgID,
+		}
+		sentMsg, sendErr = bot.SendMessage(params)
 	}
 
-	return sendErr
+	return sentMsg, sendErr
 }

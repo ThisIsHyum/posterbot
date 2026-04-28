@@ -1,8 +1,6 @@
 package bot
 
 import (
-	"log"
-
 	"telegram-bot/database"
 	"telegram-bot/handlers"
 
@@ -17,10 +15,10 @@ type Bot struct {
 	channelID   int64
 	ownerID     int64
 	ownerName   string
-	postMessage string
+	botUsername string
 }
 
-func NewBot(token string, channelID, ownerID int64, ownerName string, postMessage string) (*Bot, error) {
+func NewBot(token string, channelID, ownerID int64, ownerName string, botUsername string) (*Bot, error) {
 	bot, err := telego.NewBot(token)
 	if err != nil {
 		return nil, err
@@ -37,7 +35,7 @@ func NewBot(token string, channelID, ownerID int64, ownerName string, postMessag
 		channelID:   channelID,
 		ownerID:     ownerID,
 		ownerName:   ownerName,
-		postMessage: postMessage,
+		botUsername: botUsername,
 	}
 
 	botInstance.initializeOwner()
@@ -49,9 +47,7 @@ func (b *Bot) initializeOwner() {
 	if !b.db.IsAdmin(b.ownerID) {
 		err := b.db.AddAdmin(b.ownerID, b.ownerName)
 		if err != nil {
-			log.Printf("Предупреждение: не удалось добавить владельца: %v", err)
 		} else {
-			log.Printf("✅ Владелец %d добавлен как администратор", b.ownerID)
 		}
 	}
 }
@@ -62,13 +58,11 @@ func (b *Bot) Start() {
 	})
 
 	if err != nil {
-		log.Printf("Ошибка получения обновлений: %v", err)
 		return
 	}
 
 	botHandler, err := th.NewBotHandler(b.bot, updates)
 	if err != nil {
-		log.Printf("Ошибка создания обработчика: %v", err)
 		return
 	}
 
@@ -76,8 +70,6 @@ func (b *Bot) Start() {
 	b.botHandler = botHandler
 
 	go botHandler.Start()
-
-	log.Println("🤖 Бот-предложка запущен! Принимает анонимные предложения в ЛС")
 }
 
 func (b *Bot) Stop() {
@@ -85,20 +77,20 @@ func (b *Bot) Stop() {
 		b.botHandler.Stop()
 	}
 	b.bot.StopLongPolling()
-	log.Println("Бот остановлен")
 }
 
 func (b *Bot) registerHandlers(bh *th.BotHandler) {
 
-	mediaHandler := handlers.NewMediaHandler(b.db, b.postMessage)
-	proposalsHandler := handlers.NewProposalsHandler(b.db, mediaHandler, b.channelID, b.ownerID)
-	moderationHandler := handlers.NewModerationHandler(b.db, mediaHandler, b.channelID, b.ownerID)
+	mediaHandler := handlers.NewMediaHandler(b.db, "")
+	proposalsHandler := handlers.NewProposalsHandler(b.db, mediaHandler, b.channelID, b.ownerID, b.botUsername)
+	moderationHandler := handlers.NewModerationHandler(b.db, mediaHandler, b.channelID, b.ownerID, b.botUsername)
 	adminHandler := handlers.NewAdminHandler(b.db, b.ownerID)
 
 	bh.Handle(proposalsHandler.HandleStartCommand, th.CommandEqual("start"))
 	bh.Handle(moderationHandler.HandleProposalsCommand, th.CommandEqual("proposals"))
 	bh.Handle(adminHandler.HandleAddAdminCommand, th.CommandEqual("addadmin"))
 	bh.Handle(adminHandler.HandleListAdminsCommand, th.CommandEqual("admins"))
+	bh.Handle(adminHandler.HandleBannedCommand, th.CommandEqual("banned"))
 	bh.Handle(moderationHandler.HandlePardonCommand, th.CommandEqual("pardon"))
 
 	bh.Handle(moderationHandler.HandleCallback, th.AnyCallbackQuery())
