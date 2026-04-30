@@ -6,6 +6,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type Banned struct {
@@ -49,7 +50,9 @@ type Database struct {
 
 func NewDatabase() (*Database, error) {
 	rand.Seed(time.Now().UnixNano())
-	db, err := gorm.Open(sqlite.Open("bot.db"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("bot.db"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
 	if err != nil {
 		return nil, err
 	}
